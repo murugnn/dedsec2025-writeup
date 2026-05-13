@@ -1,0 +1,11 @@
+title: DEDSEC 2025 — CTF Writeups
+description: Nine CTF challenges I designed for DEDSEC 2025 — forensics, mobile RE, crypto, stego, web. Writeups from the designer's POV.
+author: Murugan
+theme: jekyll-theme-cayman
+plugins:
+  - jekyll-relative-links
+relative_links:
+  enabled: true
+  collections: true
+include:
+  - "*.md"
