@@ -2,138 +2,187 @@
 
 **Category:** Digital Forensics / Reverse Engineering
 **Difficulty:** Hard
-
-> *You are looking for something that was never meant to stay.*
-> *The attacker did not rely on stealth alone. They relied on confusion.*
-> *A workstation. A handful of harmless files. A payload that existed only for a moment.*
-> *It ran. It collected what it needed. Then it vanished.*
+**Flag:** `DEDSEC{d3l3t3d_f1l3_but_n0t_f0rg0tt3n}`
 
 ---
 
-## The premise
+## Why I built this challenge
 
-A workstation was compromised. The attacker dropped a few files into the user's Downloads folder, ran something briefly, exfiltrated, and cleaned up. By the time the forensic acquisition was taken, the malware was already gone.
+Every forensics CTF has _that_ one challenge where `binwalk image.png` spits out a PE, you toss it at strings, and you've got the flag before your coffee cools. I wanted Deadly Downloads to feel like the kind of incident a DFIR analyst actually shows up to: the malware is _gone_, the disk is full of plausibly-suspicious noise, and the flag isn't on disk in any form — it's a value the payload was about to _compute_ from the host before it cleaned up after itself.
 
-Players get one artefact: `CASE_2026_8902_DISK_L1.ad1` — an FTK Imager AccessData logical-image file. Their job is to walk through what looks like an ordinary Downloads folder of harmless pictures, figure out which file isn't what it claims to be, reverse-engineer the payload, and reconstruct the flag from a host-specific registry value the malware was after.
-
-This isn't a "find the flag.txt" challenge. The flag never sat on disk in plaintext. It only exists once you understand what the malware was *trying to do* — and re-do it.
+So I built a multi-stage decoy field around one real payload, hid the real payload exactly where most analysts won't look, and made the flag a function of a host fingerprint the attacker never got to exfiltrate. **The artefact the malware wanted came along for the ride in the imager. The malware did not.**
 
 ---
 
-## Step 1 — Mount the image, look at the noise
+## What players are given
 
-Load the `.ad1` in FTK Imager (or any tool that speaks AccessData's container format). The user profile's `Downloads` folder is filled with normal-looking image files — a bunch of `.png`s, `.jpg`s, some screenshots. Nothing obviously hostile.
+One file: `CASE_2026_8902_DISK_L1.ad1` — a 20 MB FTK AccessData logical image — plus a short incident note.
 
-If you `strings` them or run them through `binwalk`, several appear to have an executable embedded. That's the **first trap**. Players who jump straight to "extract the PE, drop it in a sandbox" will burn the next two hours staring at decoy executables that print insults.
+Inside the AD1 (custom-content image, not a full disk):
+
+| Item                      | Notes                                              |
+| ------------------------- | -------------------------------------------------- |
+| `sloth.png`               | clean WEBP/PNG, carries a Zone.Identifier ADS      |
+| `llama.png`               | clean image, Zone.Identifier ADS                   |
+| `punch.png`               | clean image, Zone.Identifier ADS                   |
+| `sherkhan.png`            | clean image, Zone.Identifier ADS                   |
+| `grr.png`                 | clean image, Zone.Identifier ADS                   |
+| **`kaiser.png`**          | **clean JPEG (renamed .png), Zone.Identifier ADS** |
+| `tiger.png`               | tiny stub, **no** Zone.Identifier                  |
+| `Investigation_Notes.txt` | the one-paragraph incident note                    |
+| `SOFTWARE`                | 70,184,960 byte registry hive — _the giveaway_     |
+
+The Investigation_Notes.txt deliberately spells out the trick if you read it carefully:
+
+> Standard AV scans showed all PNG files were clean, but network traffic indicates a **PE32 executable** was executed directly from a downloaded asset's **metadata**.
+
+Two words doing the heavy lifting: **PE32** (not PE32+, i.e. 32-bit not 64-bit) and **metadata** (not file body).
 
 ---
 
-## Step 2 — Mark-of-the-Web is the giveaway
+## Layer 0 — Decoys to ignore
 
-Every file downloaded by a browser on Windows gets an **NTFS Alternate Data Stream** named `Zone.Identifier`. It's the Mark-of-the-Web — that "this file came from the internet, are you sure?" prompt is driven by this ADS.
+- **Every PNG `binwalk`s clean.** No appended PEs, no polyglots, no stego in low bits. The image bodies are honest.
+- **Every Zone.Identifier ADS is a PE32+ x86-64 binary.** Five of them. They run as decoys — pop a console, print nonsense, exit. They're loud, they're big, they're not what you want.
+- **`tiger.png` has no Mark-of-the-Web.** Players who chase "the one file without a Zone.Identifier must be the malware!" are wasting their time. Tiger is a 56-byte stub.
 
-Inside the `.ad1`, the Downloads folder shows every image carrying a `:Zone.Identifier` stream — completely normal for browser downloads.
-
-Except one of those streams *lies*.
-
-I planted Zone.Identifier streams on several decoy images saying things like `ReferrerUrl=...malware-c2.example/payload.exe` — bait for analysts who skim the ADS contents and chase the loudest indicator. None of those files actually do anything.
-
-The real payload is the **boring one**. `kaiser.png` looks like a meme. Its Zone.Identifier is mundane. Its image preview renders correctly. But it's a polyglot: a valid PNG with a Win32 executable appended after the IEND chunk.
-
-The point of misdirection here is that everything looks dangerous *except* the thing that actually is.
+If you start by carving the PNG bodies, you'll get six clean images and conclude the challenge is broken. It isn't — you're looking at the wrong stream.
 
 ---
 
-## Step 3 — Carve out the embedded binary
+## Layer 1 — The deception is in the ADS, not the file
 
-Find the PNG IEND marker (`49 45 4E 44 AE 42 60 82`) and split:
+On NTFS, every file downloaded by a browser gets a `Zone.Identifier` Alternate Data Stream. Normally it contains a tiny INI:
+
+```
+[ZoneTransfer]
+ZoneId=3
+```
+
+Here, every `Zone.Identifier` ADS contains a **full PE binary** instead. The Mark-of-the-Web slot — the place no analyst inspects with anything more than `cat` — is the dropzone.
+
+Decompressing each one out of the AD1's zlib chunks:
+
+| File           | Zone.Identifier ADS                      |
+| -------------- | ---------------------------------------- |
+| sloth.png      | PE32+ x86-64, console, MinGW             |
+| llama.png      | PE32+ x86-64, GUI                        |
+| punch.png      | PE32+ x86-64, GUI                        |
+| sherkhan.png   | PE32+ x86-64, GUI                        |
+| grr.png        | PE32+ x86-64, GUI                        |
+| **kaiser.png** | **PE32 i386, console — the odd one out** |
+
+One of these is not like the others. The note told you which: **PE32**, not PE32+. The real payload is the 32-bit binary stashed behind `kaiser.png`.
+
+---
+
+## Layer 2 — The payload's job
+
+Parse the i386 PE's import table:
+
+```
+ADVAPI32.DLL
+  RegOpenKeyExA
+  RegQueryValueExA
+  RegCloseKey
+KERNEL32.dll  msvcrt.dll  (the usual)
+```
+
+And the string table is loud:
+
+```
+SOFTWARE\Microsoft\Cryptography
+MachineGuid
+[!] SYSTEM BREACHED. UNLOCKING PAYLOAD...
+FLAG:
+Starting image processing service...
+Cleaning up temporary files...
+```
+
+The whole binary has one real job: read `HKLM\SOFTWARE\Microsoft\Cryptography\MachineGuid` — Windows' per-installation fingerprint — and derive a flag from it at runtime.
+
+That's why the flag isn't on disk anywhere. `strings | grep DEDSEC` over the entire 20 MB image returns zero hits. The flag only exists once the payload's math is re-run against the GUID the imager preserved.
+
+---
+
+## Layer 3 — Reading the transformation
+
+The interesting bit of the disassembly is a 38-iteration loop right after the `FLAG: ` print:
+
+```
+mov  eax, [ebp-0xc]            ; i
+cmp  eax, 0x25                 ; while i <= 37
+ja   end
+add  eax, 0x4a2020             ; key_table[i]
+movzx eax, byte ptr [eax]
+mov  esi, eax                  ; key byte
+
+mov  eax, [ebp-0xc]
+mov  edx, 0
+div  ecx                       ; i mod len(guid)
+...                            ; fetch guid[i mod len]
+xor  eax, esi                  ; XOR with key byte
+push eax
+push "%c"
+call printf
+add  [ebp-0xc], 1
+```
+
+So: `flag[i] = MachineGuid[i % 36] XOR key_table[i]` for `i = 0..37`. The key table lives at VA `0x4a2020` in the `.data` section:
+
+```
+72 77 25 35 26 20 1f 5d 1e 0d 02 10 55 49 6b 00
+05 5a 1e 66 52 41 43 72 58 09 10 3e 50 04 11 57
+00 47 40 01 58 4f                              (38 bytes)
+```
+
+That's the whole algorithm.
+
+---
+
+## Layer 4 — Recovering the MachineGuid from the captured hive
+
+The malware self-deleted on the live box, but the imager scooped up the `SOFTWARE` hive alongside the Downloads folder — that's the one detail the theme note keeps hammering:
+
+> _the system remembers more than its users do._
+> _look at what the machine knew about itself._
+
+Carve the hive out of the AD1 by concatenating its zlib chunks (70,184,960 bytes, `regf` header), then:
 
 ```bash
-# Quick carve — split kaiser.png at IEND
-python3 - <<'PY'
-data = open("kaiser.png","rb").read()
-iend = data.index(b"IEND\xaeB`\x82") + 8
-open("legit.png","wb").write(data[:iend])
-open("payload.bin","wb").write(data[iend:])
-PY
-
-file payload.bin
-# → PE32+ executable (console) x86-64, for MS Windows
+$ hivexget SOFTWARE_hive.bin 'Microsoft\Cryptography' MachineGuid
+62afccd9-a1df-4f46-9047-69da64c00342
 ```
-
-You now have a Windows x64 executable that the malware was running before it self-deleted.
 
 ---
 
-## Step 4 — Reverse the C++ payload
+## Layer 5 — Run the malware's math by hand
 
-Drop the binary into Ghidra / IDA / Binary Ninja. After cutting through the CRT noise, the logic is short. The original C++ does something like:
-
-```cpp
-HKEY hKey;
-char machineGuid[64] = {0};
-DWORD size = sizeof(machineGuid);
-
-RegOpenKeyExA(HKEY_LOCAL_MACHINE,
-              "SOFTWARE\\Microsoft\\Cryptography",
-              0, KEY_READ | KEY_WOW64_64KEY, &hKey);
-RegQueryValueExA(hKey, "MachineGuid", NULL, NULL,
-                 (LPBYTE)machineGuid, &size);
-RegCloseKey(hKey);
-
-// strip dashes, leetify, wrap as flag
-build_flag(machineGuid);
-exfil(machineGuid);
+```python
+guid  = "62afccd9-a1df-4f46-9047-69da64c00342"
+key   = bytes.fromhex(
+    "7277253526201f5d1e0d021055496b00"
+    "055a1e6652414372580910 3e500411 57"
+    "00474001584f".replace(" ","")
+)
+flag = "".join(chr(ord(guid[i % len(guid)]) ^ key[i]) for i in range(38))
+print(flag)
 ```
 
-The takeaway: the payload's only real job was to read **`HKLM\SOFTWARE\Microsoft\Cryptography\MachineGuid`**. That's a per-installation identifier Windows generates at install time. The malware was fingerprinting the box.
-
-`MachineGuid` is the secret the attacker exfiltrated. So that's what the flag is built from.
-
-But the malware is gone — it cleaned itself up after running. How do you get the GUID back?
+```
+DEDSEC{d3l3t3d_f1l3_but_n0t_f0rg0tt3n}
+```
 
 ---
 
-## Step 5 — The system remembers what the user doesn't
+## What I learned designing this
 
-The challenge brief points right at this:
+Three things make Deadly Downloads harder than its components suggest:
 
-> *"But the system remembers more than its users do.*
-> *If you want to understand what happened, you will need to look at what the machine knew about itself."*
+1. **The deception is one NTFS stream sideways.** Players are trained to carve, `binwalk`, `strings`, and inspect file bodies. The Zone.Identifier ADS is a stream almost no one reads past — and in real Windows incidents it's a well-known dead-drop slot for downloaders. Hiding a payload in MOTW is uncomfortable on purpose.
+2. **The loud decoys outnumber the real signal.** Five PE32+ decoys, one PE32. The incident note tells you which architecture to care about, but only if you read for _exact_ wording. "PE32" vs "PE32+" is a single character, and the analyst who skims will treat them as synonyms.
+3. **The flag is never written down.** No `flag.txt`, no embedded string, no static decode path. The flag only exists when you marry the reversed payload's algorithm to the registry value preserved in the hive — i.e., you have to do the malware's job for it, using artefacts the malware never knew it was leaving behind.
 
-`MachineGuid` is stored in the registry. The registry is on disk. The `.ad1` is a disk image. So the answer is sitting in the SOFTWARE hive of the captured system.
-
-Mount the image, copy out `C:\Windows\System32\config\SOFTWARE`, and load it offline:
-
-```bash
-# Linux side — using regipy
-pip install regipy
-regipy-dump SOFTWARE | jq '.[] | select(.Path|test("Cryptography$"))'
-
-# Or from Windows: load the hive
-reg load HKLM\OFFLINE C:\path\to\SOFTWARE
-reg query HKLM\OFFLINE\Microsoft\Cryptography /v MachineGuid
-reg unload HKLM\OFFLINE
-```
-
-You get the GUID embedded in the disk image — for example:
-
-```
-MachineGuid    REG_SZ    1a2b3c4d-5e6f-7a8b-9c0d-e1f2a3b4c5d6
-```
-
-Now run the same transformation the payload does: strip dashes, apply the leetspeak substitution the binary's `build_flag()` performs, and wrap it in the flag format. That's the flag the malware would have exfiltrated had it not been caught mid-act.
-
----
-
-## Why this design
-
-Three things make Deadly Downloads harder than it reads:
-
-1. **Every file is suspicious.** Stuff a folder with Zone.Identifier streams pointing at malicious URLs, embed decoy PEs in five of them, and the real payload becomes the one with the most boring metadata. Analysts trained to follow indicators learn to distrust the loud ones; the trap is that they're not yet trained to also distrust the quiet ones.
-2. **No flag string exists anywhere on disk.** Static scanners, `strings`, `grep -r 'DEDSEC{'`, YARA rules — none of them will find this flag, because the flag is computed at runtime from a value that the imager preserved by accident. The flag exists only when you marry the reversed payload to the registry hive.
-3. **The malware is gone, but the host remembers.** The whole point is the artefact the attacker actually wanted. Players have to think like the attacker, not like the responder cleaning up after.
-
-This was my favourite to design because the solve path mirrors how real DFIR works: the threat is gone, the binary is half-recovered, and the question is no longer "what did it do" but "what did it learn about this machine."
+The two artefacts the attacker actually needed — the payload and the MachineGuid — survived in the two places the attacker didn't bother to clean: the Zone.Identifier ADS, and the registry hive the imager pulled in by accident. That's the design. Forensics is what's left behind, not what's still running.
 
 — Murugan

@@ -1,14 +1,14 @@
 # Broken Wire — DEDSEC CTF Writeup
 
 **Category:** Forensics / Crypto
-**Difficulty:** Very Hard
+**Difficulty:** Hard
 **Flag:** `DEDSEC{p4ck3ts_d0nt_l13_p30pl3_d0}`
 
 ---
 
 ## Why I built this challenge
 
-Every CTF has *that* network forensics problem where you open Wireshark, the first packet you click is the flag, and you submit it in 90 seconds. I wanted Broken Wire to feel like real packet analysis — the kind where you're staring at 1100 packets, eleven protocols are talking over each other, and the "obvious" lead is a planted decoy that wastes your afternoon.
+Every CTF has _that_ network forensics problem where you open Wireshark, the first packet you click is the flag, and you submit it in 90 seconds. I wanted Broken Wire to feel like real packet analysis — the kind where you're staring at 1100 packets, eleven protocols are talking over each other, and the "obvious" lead is a planted decoy that wastes your afternoon.
 
 So I designed a three-layer covert channel. Players don't need a single crypto trick. They need the patience to recognise that **the protocol carrying the data is not the one screaming for attention.**
 
@@ -18,18 +18,18 @@ So I designed a three-layer covert channel. Players don't need a single crypto t
 
 A single `chall.pcap` with **1108 packets**:
 
-| Protocol      | Count | Notes                                                |
-| ------------- | ----- | ---------------------------------------------------- |
-| DNS           | 522   | ~320 noise A-records + 3 key TXT + 2 decoy TXT       |
-| TCP (no data) | 149   | SYN/SA/RST handshakes                                |
-| HTTP/TCP      | 144   | Mix of noise + 3 covert responses from Host B        |
-| ICMP          | 91    | Noise + 7 covert chat messages                       |
-| ARP           | 78    | Network noise                                        |
-| NTP           | 46    | Noise                                                |
-| Syslog        | 33    | Noise                                                |
-| NetBIOS       | 18    | Noise                                                |
-| SNMP          | 14    | Noise                                                |
-| DHCP          | 8     | Noise                                                |
+| Protocol      | Count | Notes                                                 |
+| ------------- | ----- | ----------------------------------------------------- |
+| DNS           | 522   | ~320 noise A-records + 3 key TXT + 2 decoy TXT        |
+| TCP (no data) | 149   | SYN/SA/RST handshakes                                 |
+| HTTP/TCP      | 144   | Mix of noise + 3 covert responses from Host B         |
+| ICMP          | 91    | Noise + 7 covert chat messages                        |
+| ARP           | 78    | Network noise                                         |
+| NTP           | 46    | Noise                                                 |
+| Syslog        | 33    | Noise                                                 |
+| NetBIOS       | 18    | Noise                                                 |
+| SNMP          | 14    | Noise                                                 |
+| DHCP          | 8     | Noise                                                 |
 | **UDP:9001**  | **5** | **Red herring — looks exactly like a covert payload** |
 
 If you start with the UDP 9001 traffic, you'll burn an hour. The five packets contain random binary that smells like an encrypted payload. It isn't.
@@ -165,7 +165,7 @@ DEDSEC{p4ck3ts_d0nt_l13_p30pl3_d0}
 
 Two things made this challenge work harder than its components suggest:
 
-1. **The decoys are friendlier than the signal.** Every player automatically pulls all DNS TXT, all UDP payloads, all base64-looking strings. So I made the *obviously decodable* paths the wrong ones, and the real channel — XOR-obfuscated ICMP echo data — looks like binary garbage on first glance.
+1. **The decoys are friendlier than the signal.** Every player automatically pulls all DNS TXT, all UDP payloads, all base64-looking strings. So I made the _obviously decodable_ paths the wrong ones, and the real channel — XOR-obfuscated ICMP echo data — looks like binary garbage on first glance.
 2. **TTL and `X-Trace-Id` as ordering primitives are uncomfortable.** Players know to sort by sequence number for TCP, by ID for IP, by timestamp for everything. Reusing TTL as an index breaks the muscle memory.
 
 The chat in ICMP is the spine of the whole solve. If you read it, the rest is mechanical. If you don't, you're guessing for hours. That's the design.
